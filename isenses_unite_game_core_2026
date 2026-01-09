@@ -1,0 +1,395 @@
+# iSenses – Unite Game Framework
+
+Tento repozitář definuje jednotný rámec pro tvorbu her v systému iSenses
+pro Unite jednotky (Wall / Stand / Board).
+
+Cílem je, aby všechny hry:
+- měly stejnou strukturu kódu
+- byly skládány z opakovatelných modulů
+- oddělovaly UI od herní logiky
+- pracovaly nad jednotnou referenční plochou
+
+---
+
+## Základní principy
+
+- **GameSurface4K** je základní herní rámec („stůl“)
+- UI je hloupé – neobsahuje herní logiku ani rozhodování
+- Logika hry je oddělená v samostatném enginu
+- Všechny hry běží nad referenční plochou **3520 × 1840 px**
+- Hry se skládají z vrstev, nepíšou se znovu
+
+---
+
+## Závazné pořadí vrstev (neměnné)
+
+1. **GameSurface4K** – herní rámec a okraje
+2. **StageDefinition** – vymezení aktivního herního pole
+3. **ButtonDefinition** – jednotné chování tlačítek
+4. **LayoutEngine** – rozestavení tlačítek v prostoru
+5. **GameEngine** – herní logika, časování, metriky
+
+Každá hra musí respektovat toto pořadí.
+
+---
+
+## Referenční plocha
+
+- Stage: **3520 × 1840 px**
+- Souřadnice: (0,0) vlevo nahoře
+- Aktivní herní pole je vždy vymezeno rámcem GameSurface4K
+- Herní logika nikdy nepracuje mimo aktivní herní pole
+
+---
+
+## Struktura repozitáře
+
+/**
+ * GameSurface4K
+ *
+ * Základní herní rámec pro všechny Unite hry v iSenses.
+ * Definuje referenční plochu 3520 × 1840 px, okraje,
+ * horní ovládací lištu a aktivní herní pole.
+ *
+ * Neobsahuje žádnou herní logiku.
+ * Slouží jako pevný „stůl“, na který se hry skládají.
+ */
+
+import React from "react";
+
+const STAGE_W = 3520;
+const STAGE_H = 1840;
+
+const MARGIN_L = 120;
+const MARGIN_R = 120;
+const TOPBAR_H = 160;
+const BOTTOM_H = 120;
+
+export const PLAY_X = MARGIN_L;
+export const PLAY_Y = TOPBAR_H;
+export const PLAY_W = STAGE_W - MARGIN_L - MARGIN_R;
+export const PLAY_H = STAGE_H - TOPBAR_H - BOTTOM_H;
+
+type GameSurface4KProps = {
+  title: string;
+  progressPct: number; // 0–100
+  isPaused: boolean;
+  onPauseToggle: () => void;
+  onStop: () => void;
+  children: React.ReactNode;
+};
+
+export function GameSurface4K({
+  title,
+  progressPct,
+  isPaused,
+  onPauseToggle,
+  onStop,
+  children,
+}: GameSurface4KProps) {
+  return (
+    <div
+      style={{
+        width: STAGE_W,
+        height: STAGE_H,
+        background: "#0D2B55",
+        color: "#FFFFFF",
+        position: "relative",
+        overflow: "hidden",
+        fontFamily: "Inter, system-ui, sans-serif",
+      }}
+    >
+      {/* TOP BAR */}
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: STAGE_W,
+          height: TOPBAR_H,
+          display: "flex",
+          alignItems: "center",
+          padding: "0 32px",
+          boxSizing: "border-box",
+          background: "#082040",
+        }}
+      >
+        {/* LEFT – title */}
+        <div style={{ flex: 1, fontSize: 28, fontWeight: 600 }}>
+          {title}
+        </div>
+
+        {/* CENTER – progress */}
+        <div style={{ fontSize: 32, fontWeight: 700 }}>
+          {Math.round(progressPct)} %
+        </div>
+
+        {/* RIGHT – controls */}
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: 16,
+          }}
+        >
+          <button onClick={onPauseToggle} style={controlBtnStyle}>
+            {isPaused ? "Resume" : "Pause"}
+          </button>
+
+          <button
+            onClick={onStop}
+            style={{
+              ...controlBtnStyle,
+              borderColor: "#D50032",
+              color: "#D50032",
+            }}
+          >
+            Stop
+          </button>
+        </div>
+      </div>
+
+      {/* PLAYABLE AREA */}
+      <div
+        style={{
+          position: "absolute",
+          left: PLAY_X,
+          top: PLAY_Y,
+          width: PLAY_W,
+          height: PLAY_H,
+          background: "#0F3A6D",
+          borderRadius: 24,
+          overflow: "hidden",
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const controlBtnStyle: React.CSSProperties = {
+  height: 64,
+  padding: "0 24px",
+  fontSize: 22,
+  fontWeight: 600,
+  background: "#FFFFFF",
+  color: "#1D1D1D",
+  border: "4px solid #1D1D1D",
+  borderRadius: 16,
+  cursor: "pointer",
+};
+/**
+ * StageDefinition
+ *
+ * Jednotná definice herního prostoru pro Unite hry.
+ * Pracuje nad referenční plochou 3520 × 1840 px
+ * a vymezuje aktivní herní pole (Playable Area).
+ *
+ * Neobsahuje žádnou herní logiku ani UI.
+ * Slouží jako geometrický a souřadnicový základ.
+ */
+
+// === REFERENČNÍ STAGE ========================================================
+
+export const STAGE_W = 3520;
+export const STAGE_H = 1840;
+
+// === OKRAJE ================================================================
+
+export const MARGIN_LEFT = 120;
+export const MARGIN_RIGHT = 120;
+export const TOPBAR_HEIGHT = 160;
+export const BOTTOM_HEIGHT = 120;
+
+// === AKTIVNÍ HERNÍ POLE =====================================================
+
+export const PLAY_X = MARGIN_LEFT;
+export const PLAY_Y = TOPBAR_HEIGHT;
+
+export const PLAY_W = STAGE_W - MARGIN_LEFT - MARGIN_RIGHT;
+export const PLAY_H = STAGE_H - TOPBAR_HEIGHT - BOTTOM_HEIGHT;
+
+// === TYPY ==================================================================
+
+export type Rect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type Point = {
+  x: number;
+  y: number;
+};
+
+// === ZÁKLADNÍ OBJEKTY =======================================================
+
+export const StageRect: Rect = {
+  x: 0,
+  y: 0,
+  width: STAGE_W,
+  height: STAGE_H,
+};
+
+export const PlayableRect: Rect = {
+  x: PLAY_X,
+  y: PLAY_Y,
+  width: PLAY_W,
+  height: PLAY_H,
+};
+
+// === POMOCNÉ FUNKCE =========================================================
+
+/**
+ * Převod normalizovaných souřadnic (0–1) do aktivního herního pole.
+ * Vhodné pro layouty, které chtějí být nezávislé na px.
+ */
+export function toPlayablePx(nx: number, ny: number): Point {
+  return {
+    x: PlayableRect.x + nx * PlayableRect.width,
+    y: PlayableRect.y + ny * PlayableRect.height,
+  };
+}
+
+/**
+ * Převod lokálních souřadnic herního pole (0–PLAY_W / 0–PLAY_H)
+ * do absolutních souřadnic stage.
+ */
+export function localToStagePx(x: number, y: number): Point {
+  return {
+    x: PlayableRect.x + x,
+    y: PlayableRect.y + y,
+  };
+}
+
+/**
+ * Ověření, že bod leží v aktivním herním poli.
+ * Používá se např. pro validaci kliků.
+ */
+export function isInsidePlayable(x: number, y: number): boolean {
+  return (
+    x >= PlayableRect.x &&
+    y >= PlayableRect.y &&
+    x <= PlayableRect.x + PlayableRect.width &&
+    y <= PlayableRect.y + PlayableRect.height
+  );
+}
+/**
+ * ButtonDefinition
+ *
+ * Jednotné herní tlačítko pro všechny iSenses Unite hry.
+ * Slouží výhradně jako vizuální a vstupní prvek.
+ *
+ * Neobsahuje žádnou herní logiku.
+ * Neví, co je HIT, ERROR, GO nebo NO-GO.
+ * Pouze vykresluje stav a hlásí interakci.
+ */
+
+import React from "react";
+
+// === KONSTANTY ===============================================================
+
+export const BUTTON_SIZE = 166; // px – pevná velikost, nikdy se nemění
+
+// === TYPY ===================================================================
+
+export type ButtonVisualState =
+  | "idle"       // defaultní stav, neaktivní
+  | "active"     // právě aktivní cíl
+  | "hit"        // správný zásah (krátká vizuální odezva)
+  | "error"      // chybný zásah (krátká vizuální odezva)
+  | "disabled";  // hra neběží
+
+export type ButtonRole =
+  | "neutral"    // bez významu (prázdné pole)
+  | "go"         // cíl, který má být zasažen
+  | "no-go";     // cíl, na který se nemá reagovat
+
+export type ButtonDefinitionProps = {
+  id: string | number;
+
+  role: ButtonRole;
+  state: ButtonVisualState;
+
+  x: number; // absolutní pozice vůči PlayableArea
+  y: number;
+
+  onPress?: (id: string | number, x: number, y: number) => void;
+};
+
+// === KOMPONENTA =============================================================
+
+export function ButtonDefinition({
+  id,
+  role,
+  state,
+  x,
+  y,
+  onPress,
+}: ButtonDefinitionProps) {
+  const isInteractive = state !== "disabled";
+
+  return (
+    <button
+      id={`btn-${id}`}
+      onClick={
+        isInteractive && onPress
+          ? (e) => onPress(id, e.clientX, e.clientY)
+          : undefined
+      }
+      disabled={!isInteractive}
+      style={{
+        position: "absolute",
+        left: x,
+        top: y,
+        width: BUTTON_SIZE,
+        height: BUTTON_SIZE,
+
+        borderRadius: 16,
+        border: borderByState(state),
+        background: backgroundByRole(role, state),
+
+        cursor: isInteractive ? "pointer" : "default",
+        userSelect: "none",
+        padding: 0,
+      }}
+    />
+  );
+}
+
+// === STYLING LOGIKA ==========================================================
+// čistě vizuální – bez významu pro hru
+
+function backgroundByRole(role: ButtonRole, state: ButtonVisualState): string {
+  if (state === "disabled") return "#E0E0E0";
+
+  if (state === "hit") return "#00A499";
+  if (state === "error") return "#D50032";
+
+  switch (role) {
+    case "go":
+      return state === "active" ? "#00A499" : "#A7E4D8";
+    case "no-go":
+      return state === "active" ? "#D50032" : "#F3A0B0";
+    case "neutral":
+    default:
+      return "#FFFFFF";
+  }
+}
+
+function borderByState(state: ButtonVisualState): string {
+  switch (state) {
+    case "active":
+      return "3px solid #000000";
+    case "hit":
+      return "4px solid #00695C";
+    case "error":
+      return "4px solid #8E0038";
+    default:
+      return "2px solid #B0B0B0";
+  }
+}
+
