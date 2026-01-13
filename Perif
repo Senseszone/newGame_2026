@@ -1,0 +1,92 @@
+// LayoutEngine-only: 4× periferní grid 5×5
+// Standard: ButtonCell = 120×120 px (uloženo do paměti)
+// Vstup: rect každého kvadrantu (z tvé StageDefinition)
+// Výstup: absolutní pozice + quad/idx (UI-agnostické)
+
+export type Rect = { x: number; y: number; w: number; h: number };
+export type Quad = 0 | 1 | 2 | 3;
+
+export type GridButton = {
+  id: string;
+  quad: Quad;
+  idx: number; // 0..24
+  row: number; // 0..4
+  col: number; // 0..4
+  x: number;   // px
+  y: number;   // px
+  w: number;   // px
+  h: number;   // px
+};
+
+type GridParams = {
+  N?: number;              // default 5
+  buttonSizePx?: number;   // default 120
+  innerPaddingPx?: number; // default 24
+  idPrefix?: string;       // default "Q"
+};
+
+function assertNonNeg(v: number, msg: string) {
+  if (v < 0) throw new Error(msg);
+}
+
+export function layoutFixedCellGridInRect(
+  quadRect: Rect,
+  quad: Quad,
+  params?: GridParams
+): GridButton[] {
+  const N = params?.N ?? 5;
+  const S = params?.buttonSizePx ?? 120; // ← změna
+  const pad = params?.innerPaddingPx ?? 24;
+  const prefix = params?.idPrefix ?? "Q";
+
+  const innerW = quadRect.w - 2 * pad;
+  const innerH = quadRect.h - 2 * pad;
+
+  const gapX = (innerW - N * S) / (N - 1);
+  const gapY = (innerH - N * S) / (N - 1);
+
+  assertNonNeg(gapX, `Quad ${quad}: šířka malá (gapX=${gapX})`);
+  assertNonNeg(gapY, `Quad ${quad}: výška malá (gapY=${gapY})`);
+
+  const gridW = N * S + (N - 1) * gapX;
+  const gridH = N * S + (N - 1) * gapY;
+
+  const startX = quadRect.x + pad + Math.round((innerW - gridW) / 2);
+  const startY = quadRect.y + pad + Math.round((innerH - gridH) / 2);
+
+  const out: GridButton[] = [];
+  for (let row = 0; row < N; row++) {
+    for (let col = 0; col < N; col++) {
+      const idx = row * N + col;
+      out.push({
+        id: `${prefix}${quad}_${idx}`,
+        quad,
+        idx,
+        row,
+        col,
+        x: Math.round(startX + col * (S + gapX)),
+        y: Math.round(startY + row * (S + gapY)),
+        w: S,
+        h: S,
+      });
+    }
+  }
+  return out;
+}
+
+export function layoutFourPeripheralGrids(
+  quadRects: Record<Quad, Rect>,
+  params?: GridParams
+): { buttons: GridButton[]; byQuad: Record<Quad, GridButton[]> } {
+  const byQuad = {
+    0: layoutFixedCellGridInRect(quadRects[0], 0, params),
+    1: layoutFixedCellGridInRect(quadRects[1], 1, params),
+    2: layoutFixedCellGridInRect(quadRects[2], 2, params),
+    3: layoutFixedCellGridInRect(quadRects[3], 3, params),
+  } satisfies Record<Quad, GridButton[]>;
+
+  return {
+    buttons: [...byQuad[0], ...byQuad[1], ...byQuad[2], ...byQuad[3]],
+    byQuad,
+  };
+}
