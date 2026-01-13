@@ -292,7 +292,7 @@ import React from "react";
 
 // === KONSTANTY ===============================================================
 
-export const BUTTON_SIZE = 166; // px – pevná velikost, nikdy se nemění
+export const BUTTON_SIZE = 120; // px – pevná velikost, nikdy se nemění
 
 // === TYPY ===================================================================
 
