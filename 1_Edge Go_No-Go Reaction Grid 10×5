@@ -1,0 +1,686 @@
+// src/components/ColorReactionGameEdges.jsx
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+/**
+ * ColorReactionGameEdges (Go/No-Go) – unit_logic refactor
+ * Rozložení: 10 v řadě × 5 ve sloupci (10×5), BUTTON_SIZE = 167 px
+ * - Zelená = GO (klikni v rámci reakčního okna)
+ * - Červená = NO-GO (neklikej)
+ * - 50 stimulů, 1 aktivní v čase
+ * - Náhodná doba zobrazení 500–1500 ms + jitter 30–120 ms
+ * - Adaptivní reakční okno (start 800 ms)
+ * - Měření přesnosti: Distance_Error (px) od středu cíle + norm (volitelně)
+ * - emitEvent: {type, ts, data}
+ * - emitScore: 1× na konci: {taskId, metrics}
+ */
+
+export default function ColorReactionEdgesGame({
+  sessionId,
+  taskId,
+  emitEvent,
+  emitScore,
+  config,
+}) {
+  // ---------------------------------------------------------------------------
+  // StageDefinition
+  // ---------------------------------------------------------------------------
+  const StageDefinition = useMemo(() => {
+    return {
+      COLS: 10, // 10 v řadě
+      ROWS: 5,  // 5 ve sloupci
+      TOTAL_STIMULI: 50,
+      MAX_ACTIVE: 1,
+
+      BUTTON_SIZE_PX: 167,
+      MIN_DISPLAY_MS: 500,
+      MAX_DISPLAY_MS: 1500,
+      JITTER_MS_MIN: 30,
+      JITTER_MS_MAX: 120,
+
+      REACTION_WINDOW_START_MS: 800,
+      REACTION_WINDOW_MIN_MS: 400,
+      REACTION_WINDOW_MAX_MS: 1200,
+    };
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Palette / constants
+  // ---------------------------------------------------------------------------
+  const palette = useMemo(
+    () => ({
+      blue: "#1A4E8A",
+      red: "#D50032",
+      green: "#00A499",
+      white: "#FFFFFF",
+      black: "#1D1D1D",
+      panel: "#0D2B55",
+    }),
+    []
+  );
+
+  const name = String(config?.name ?? "");
+  const description = String(config?.description ?? "");
+
+  const nowMs = () => Date.now();
+  const randInt = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+
+  // ---------------------------------------------------------------------------
+  // GameSurface4K (UI frame)
+  // ---------------------------------------------------------------------------
+  const GameSurface4K = useCallback(function GameSurface4K({
+    title,
+    descriptionHtml,
+    running,
+    progressPct,
+    hits,
+    errors,
+    misses,
+    onStart,
+    onStop,
+    children,
+  }) {
+    return (
+      <div
+        style={{
+          width: "100vw",
+          height: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          background: palette.blue,
+          color: palette.white,
+          padding: 16,
+          gap: 12,
+        }}
+      >
+        {/* TopBar */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ fontSize: 20, fontWeight: 600, zIndex: 10 }}>{title}</div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ fontWeight: 600 }}>{progressPct}%</div>
+            <div style={{ opacity: 0.95 }}>
+              <span style={{ marginRight: 12 }}>Správně: {hits}</span>
+              <span style={{ marginRight: 12 }}>Chyby: {errors}</span>
+              <span>Minul: {misses}</span>
+            </div>
+
+            {running ? (
+              <button
+                onClick={onStop}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 16,
+                  background: palette.white,
+                  color: palette.black,
+                  border: `4px solid ${palette.black}`,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  fontWeight: 700,
+                }}
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                onClick={onStart}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 16,
+                  background: palette.white,
+                  color: palette.black,
+                  border: `4px solid ${palette.black}`,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  fontWeight: 700,
+                }}
+              >
+                Start
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Overlay + Description (before start) */}
+        {!running ? (
+          <>
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.15)",
+                pointerEvents: "none",
+              }}
+            />
+            {descriptionHtml ? (
+              <div
+                style={{
+                  maxWidth: 900,
+                  background: "rgba(255,255,255,0.08)",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  borderRadius: 16,
+                  padding: 16,
+                }}
+                dangerouslySetInnerHTML={{ __html: descriptionHtml }}
+              />
+            ) : null}
+          </>
+        ) : null}
+
+        {/* Game area */}
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            position: "relative",
+          }}
+        >
+          {children}
+        </div>
+      </div>
+    );
+  }, [palette]);
+
+  // ---------------------------------------------------------------------------
+  // ButtonDefinition (UI-only)
+  // ---------------------------------------------------------------------------
+  const ButtonCell = useCallback(function ButtonCell({ id, disabled, onClick, bg, border }) {
+    return (
+      <button
+        id={id}
+        disabled={disabled}
+        onClick={onClick}
+        style={{
+          width: StageDefinition.BUTTON_SIZE_PX,
+          height: StageDefinition.BUTTON_SIZE_PX,
+          border,
+          background: bg,
+          borderRadius: 12,
+          cursor: disabled ? "default" : "pointer",
+          userSelect: "none",
+        }}
+      />
+    );
+  }, [StageDefinition.BUTTON_SIZE_PX]);
+
+  // ---------------------------------------------------------------------------
+  // LayoutEngine (index mapping + spawn policy)
+  // ---------------------------------------------------------------------------
+  const LayoutEngine = useMemo(() => {
+    const rowColToIdx = (r, c) => r * StageDefinition.COLS + c;
+    const idxToRowCol = (idx) => ({
+      row: Math.floor(idx / StageDefinition.COLS),
+      col: idx % StageDefinition.COLS,
+    });
+
+    // Původní "edges" logika = jen krajní sloupce 0 a (COLS-1)
+    const pickEdgeIndex = () => {
+      const edgeCol = Math.random() < 0.5 ? 0 : StageDefinition.COLS - 1;
+      const row = randInt(0, StageDefinition.ROWS - 1);
+      return rowColToIdx(row, edgeCol);
+    };
+
+    return { rowColToIdx, idxToRowCol, pickEdgeIndex };
+  }, [StageDefinition.COLS, StageDefinition.ROWS]);
+
+  // ---------------------------------------------------------------------------
+  // GameEngine (state + refs + timing + metrics)
+  // ---------------------------------------------------------------------------
+  const stageRef = useRef(null);
+  const runningRef = useRef(false);
+
+  const startTsRef = useRef(null);
+  const totalShownRef = useRef(0);
+
+  const hitsRef = useRef(0);
+  const errorsRef = useRef(0);
+  const missesRef = useRef(0);
+
+  const rtListRef = useRef([]);
+  const distPxListRef = useRef([]);
+  const distNormListRef = useRef([]);
+
+  const reactionWindowMsRef = useRef(StageDefinition.REACTION_WINDOW_START_MS);
+  const reactionWindowHistoryRef = useRef([StageDefinition.REACTION_WINDOW_START_MS]);
+
+  const lastColorRef = useRef(null);
+
+  // timers
+  const timeoutsRef = useRef({ spawn: null, stimExpiry: null });
+
+  // UI state
+  const [running, setRunning] = useState(false);
+  const [stimulus, setStimulus] = useState(null); // { id, idx, color, shownAtMs, perfShownAt, expiresAtMs }
+  const [shownCount, setShownCount] = useState(0); // for progress UI
+  const [uiHits, setUiHits] = useState(0);
+  const [uiErrors, setUiErrors] = useState(0);
+  const [uiMisses, setUiMisses] = useState(0);
+
+  const clearTimers = useCallback(() => {
+    const t = timeoutsRef.current;
+    if (t.spawn) clearTimeout(t.spawn);
+    if (t.stimExpiry) clearTimeout(t.stimExpiry);
+    t.spawn = null;
+    t.stimExpiry = null;
+  }, []);
+
+  const resetEngine = useCallback(() => {
+    clearTimers();
+
+    runningRef.current = false;
+    startTsRef.current = null;
+
+    totalShownRef.current = 0;
+    hitsRef.current = 0;
+    errorsRef.current = 0;
+    missesRef.current = 0;
+
+    rtListRef.current = [];
+    distPxListRef.current = [];
+    distNormListRef.current = [];
+
+    reactionWindowMsRef.current = StageDefinition.REACTION_WINDOW_START_MS;
+    reactionWindowHistoryRef.current = [StageDefinition.REACTION_WINDOW_START_MS];
+
+    lastColorRef.current = null;
+
+    setStimulus(null);
+    setShownCount(0);
+    setUiHits(0);
+    setUiErrors(0);
+    setUiMisses(0);
+  }, [StageDefinition.REACTION_WINDOW_START_MS, clearTimers]);
+
+  const finalizeScore = useCallback(() => {
+    const endTs = nowMs();
+    const startTs = startTsRef.current ?? endTs;
+    const durationMs = Math.max(0, endTs - startTs);
+
+    const hits = hitsRef.current;
+    const errors = errorsRef.current;
+    const misses = missesRef.current;
+
+    const rtList = rtListRef.current.slice();
+    const avgRT = rtList.length ? Math.round(rtList.reduce((a, b) => a + b, 0) / rtList.length) : 0;
+    const bestRT = rtList.length ? Math.min(...rtList) : 0;
+
+    const attempts = hits + errors + misses;
+    const accuracy = attempts ? Math.round((hits / attempts) * 100) : 0;
+
+    // distance aggregates (px)
+    const distPx = distPxListRef.current.slice();
+    const avgDistPx = distPx.length ? Math.round(distPx.reduce((a, b) => a + b, 0) / distPx.length) : 0;
+    const maxDistPx = distPx.length ? Math.max(...distPx) : 0;
+
+    // NOTE: Distance_Error_Norm není ve vašem core slovníku; posílám ho do details přes eventy,
+    // a do emitScore jen základ (px) + agregace. Pokud chcete norm i v score, řekni a doplním.
+    emitScore?.({
+      taskId,
+      metrics: {
+        Completion_Time: durationMs,
+        Reaction_Time_Avg: avgRT,
+        Reaction_Time_List: rtList,
+        Reaction_Time_Best: bestRT,
+        Hits: hits,
+        Errors: errors,
+        Accuracy: accuracy,
+        Avg_Distance_Error: avgDistPx,
+        Max_Distance_Error: maxDistPx,
+      },
+    });
+
+    emitEvent?.({
+      type: "END",
+      ts: endTs,
+      data: {
+        Hits: hits,
+        Errors: errors,
+        Misses: misses,
+        Reaction_Time_Avg: avgRT,
+        Reaction_Time_Best: bestRT,
+        Accuracy: accuracy,
+        Avg_Distance_Error: avgDistPx,
+        Max_Distance_Error: maxDistPx,
+        Total_Stimuli: totalShownRef.current,
+        Reaction_Window_History: reactionWindowHistoryRef.current,
+      },
+    });
+  }, [emitEvent, emitScore, taskId]);
+
+  const stop = useCallback(() => {
+    if (!runningRef.current) return;
+    runningRef.current = false;
+    setRunning(false);
+    clearTimers();
+    setStimulus(null);
+    finalizeScore();
+  }, [clearTimers, finalizeScore]);
+
+  const adaptDifficulty = useCallback(() => {
+    const recentHits = rtListRef.current.slice(-10);
+    const avgRecent = recentHits.length
+      ? recentHits.reduce((a, b) => a + b, 0) / recentHits.length
+      : reactionWindowMsRef.current;
+
+    const missRate = missesRef.current / Math.max(1, totalShownRef.current);
+    const errorRate = errorsRef.current / Math.max(1, totalShownRef.current);
+    const targetWindow = Math.max(StageDefinition.REACTION_WINDOW_MIN_MS, Math.round(avgRecent * 0.9));
+
+    if (missRate < 0.05 && errorRate < 0.05 && avgRecent < reactionWindowMsRef.current) {
+      reactionWindowMsRef.current = Math.max(StageDefinition.REACTION_WINDOW_MIN_MS, targetWindow);
+    } else if (missRate > 0.15 || errorRate > 0.15) {
+      reactionWindowMsRef.current = Math.min(
+        StageDefinition.REACTION_WINDOW_MAX_MS,
+        Math.round(reactionWindowMsRef.current * 1.1)
+      );
+    }
+
+    reactionWindowHistoryRef.current.push(reactionWindowMsRef.current);
+
+    emitEvent?.({
+      type: "ADAPT",
+      ts: nowMs(),
+      data: { Reaction_Window_Ms: reactionWindowMsRef.current },
+    });
+  }, [
+    StageDefinition.REACTION_WINDOW_MAX_MS,
+    StageDefinition.REACTION_WINDOW_MIN_MS,
+    emitEvent,
+  ]);
+
+  const spawnStimulus = useCallback(() => {
+    clearTimers();
+    if (!runningRef.current) return;
+
+    // limit reached: čekej až nebude nic aktivní a pak ukonči
+    if (totalShownRef.current >= StageDefinition.TOTAL_STIMULI) {
+      if (!stimulus) {
+        stop();
+      }
+      return;
+    }
+
+    // Barva: nesmí být 2× červená za sebou
+    let color;
+    if (lastColorRef.current === "red") color = "green";
+    else color = Math.random() < 0.5 ? "green" : "red";
+    lastColorRef.current = color;
+
+    const idx = LayoutEngine.pickEdgeIndex();
+
+    const shownAtMs = nowMs();
+    const perfShownAt = performance.now();
+
+    const displayDur = randInt(StageDefinition.MIN_DISPLAY_MS, StageDefinition.MAX_DISPLAY_MS);
+    const expiresAtMs = shownAtMs + displayDur;
+    const id = `${shownAtMs}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const stimObj = { id, idx, color, shownAtMs, perfShownAt, expiresAtMs };
+
+    setStimulus(stimObj);
+
+    totalShownRef.current += 1;
+    setShownCount(totalShownRef.current);
+
+    emitEvent?.({
+      type: "STIMULUS",
+      ts: shownAtMs,
+      data: { id, idx, color, displayMs: displayDur },
+    });
+
+    // expiry logic
+    timeoutsRef.current.stimExpiry = setTimeout(() => {
+      // stimulus expiroval
+      if (!runningRef.current) return;
+
+      setStimulus((current) => {
+        if (!current || current.id !== id) return current;
+
+        if (current.color === "green") {
+          missesRef.current += 1;
+          setUiMisses(missesRef.current);
+
+          emitEvent?.({
+            type: "MISS",
+            ts: nowMs(),
+            data: { idx: current.idx, color: "green" },
+          });
+        }
+
+        // po expiračním zhasnutí naplánuj další spawn (pokud ještě není limit)
+        const jitter = randInt(StageDefinition.JITTER_MS_MIN, StageDefinition.JITTER_MS_MAX);
+        timeoutsRef.current.spawn = setTimeout(() => {
+          if (!runningRef.current) return;
+          spawnStimulus();
+        }, jitter);
+
+        return null;
+      });
+    }, displayDur);
+  }, [
+    LayoutEngine,
+    StageDefinition.JITTER_MS_MAX,
+    StageDefinition.JITTER_MS_MIN,
+    StageDefinition.MAX_DISPLAY_MS,
+    StageDefinition.MIN_DISPLAY_MS,
+    StageDefinition.TOTAL_STIMULI,
+    clearTimers,
+    emitEvent,
+    stop,
+    stimulus,
+  ]);
+
+  const scheduleInitialSpawn = useCallback(() => {
+    const jitter = randInt(StageDefinition.JITTER_MS_MIN, StageDefinition.JITTER_MS_MAX);
+    timeoutsRef.current.spawn = setTimeout(() => {
+      if (!runningRef.current) return;
+      spawnStimulus();
+    }, jitter);
+  }, [StageDefinition.JITTER_MS_MAX, StageDefinition.JITTER_MS_MIN, spawnStimulus]);
+
+  const start = useCallback(() => {
+    resetEngine();
+    runningRef.current = true;
+    setRunning(true);
+
+    const ts = nowMs();
+    startTsRef.current = ts;
+
+    emitEvent?.({ type: "START", ts, data: { sessionId, taskId } });
+
+    scheduleInitialSpawn();
+  }, [emitEvent, resetEngine, scheduleInitialSpawn, sessionId, taskId]);
+
+  const measureDistancePx = useCallback((cellIdx, ev) => {
+    const stage = stageRef.current;
+    if (!stage) return { distPx: 0, distNorm: 0 };
+
+    const rectStage = stage.getBoundingClientRect();
+    const cellEl = document.getElementById(`cell-${cellIdx}`);
+    if (!cellEl) return { distPx: 0, distNorm: 0 };
+
+    const r = cellEl.getBoundingClientRect();
+    const cx = r.left - rectStage.left + r.width / 2;
+    const cy = r.top - rectStage.top + r.height / 2;
+
+    const tx = ev.clientX - rectStage.left;
+    const ty = ev.clientY - rectStage.top;
+
+    const distPx = Math.hypot(cx - tx, cy - ty);
+    const distNorm = distPx / (StageDefinition.BUTTON_SIZE_PX / 2);
+
+    return { distPx: Math.round(distPx), distNorm: Math.round(distNorm * 1000) / 1000 };
+  }, [StageDefinition.BUTTON_SIZE_PX]);
+
+  const onCellClick = useCallback(
+    (cellIdx, ev) => {
+      if (!runningRef.current) return;
+
+      // klik mimo aktivní stimulus = ERROR_EMPTY
+      if (!stimulus || stimulus.idx !== cellIdx) {
+        errorsRef.current += 1;
+        setUiErrors(errorsRef.current);
+
+        emitEvent?.({ type: "ERROR_EMPTY", ts: nowMs(), data: { idx: cellIdx } });
+        return;
+      }
+
+      // klik na aktivní stimulus
+      const rt = Math.round(performance.now() - stimulus.perfShownAt);
+      const withinWindow = nowMs() - stimulus.shownAtMs <= reactionWindowMsRef.current;
+
+      const { distPx, distNorm } = measureDistancePx(cellIdx, ev);
+
+      if (stimulus.color === "green" && withinWindow) {
+        hitsRef.current += 1;
+        setUiHits(hitsRef.current);
+
+        rtListRef.current.push(rt);
+
+        distPxListRef.current.push(distPx);
+        distNormListRef.current.push(distNorm);
+
+        emitEvent?.({
+          type: "HIT",
+          ts: nowMs(),
+          data: {
+            idx: cellIdx,
+            color: "green",
+            reactionMs: rt,
+            Distance_Error: distPx,
+            Distance_Error_Norm: distNorm,
+          },
+        });
+
+        // adapt po každých 10 pokusech (hits+errors+misses)
+        if ((hitsRef.current + errorsRef.current + missesRef.current) % 10 === 0) {
+          adaptDifficulty();
+        }
+      } else {
+        errorsRef.current += 1;
+        setUiErrors(errorsRef.current);
+
+        const reason = stimulus.color === "red" ? "no-go" : "late";
+
+        // i u ERROR ukládáme přesnost (pro impulzivitu / no-go analýzu)
+        distPxListRef.current.push(distPx);
+        distNormListRef.current.push(distNorm);
+
+        emitEvent?.({
+          type: "ERROR",
+          ts: nowMs(),
+          data: {
+            idx: cellIdx,
+            color: stimulus.color,
+            reason,
+            reactionMs: rt,
+            Distance_Error: distPx,
+            Distance_Error_Norm: distNorm,
+          },
+        });
+      }
+
+      // stimulus končí klikem
+      clearTimers();
+      setStimulus(null);
+
+      // další spawn (pokud není limit)
+      const jitter = randInt(StageDefinition.JITTER_MS_MIN, StageDefinition.JITTER_MS_MAX);
+      timeoutsRef.current.spawn = setTimeout(() => {
+        if (!runningRef.current) return;
+        spawnStimulus();
+      }, jitter);
+    },
+    [
+      StageDefinition.JITTER_MS_MAX,
+      StageDefinition.JITTER_MS_MIN,
+      adaptDifficulty,
+      clearTimers,
+      emitEvent,
+      measureDistancePx,
+      spawnStimulus,
+      stimulus,
+    ]
+  );
+
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      runningRef.current = false;
+      clearTimers();
+    };
+  }, [clearTimers]);
+
+  // ---------------------------------------------------------------------------
+  // GameView (10×5 grid roztažený přes celou obrazovku s pevným BUTTON_SIZE)
+  // ---------------------------------------------------------------------------
+  const progressPct = useMemo(() => {
+    const pct = StageDefinition.TOTAL_STIMULI
+      ? Math.round((shownCount / StageDefinition.TOTAL_STIMULI) * 100)
+      : 0;
+    return Math.max(0, Math.min(100, pct));
+  }, [StageDefinition.TOTAL_STIMULI, shownCount]);
+
+  // Gap počítáme tak, aby se grid rozprostřel přes dostupnou plochu.
+  // Použijeme CSS grid s `place-content: space-between` a fixními buňkami.
+  const gridStyle = useMemo(() => {
+    return {
+      margin: "auto",
+      width: "100%",
+      height: "100%",
+      maxWidth: "calc(100vw - 64px)",
+      maxHeight: "calc(100vh - 160px)",
+
+      display: "grid",
+      gridTemplateColumns: `repeat(${StageDefinition.COLS}, ${StageDefinition.BUTTON_SIZE_PX}px)`,
+      gridTemplateRows: `repeat(${StageDefinition.ROWS}, ${StageDefinition.BUTTON_SIZE_PX}px)`,
+
+      // Rozprostření po celé ploše bez ručního dopočtu gapů
+      placeContent: "space-between",
+
+      background: palette.panel,
+      borderRadius: 20,
+      padding: 24,
+      boxSizing: "border-box",
+    };
+  }, [StageDefinition.BUTTON_SIZE_PX, StageDefinition.COLS, StageDefinition.ROWS, palette.panel]);
+
+  return (
+    <GameSurface4K
+      title={name}
+      descriptionHtml={description}
+      running={running}
+      progressPct={progressPct}
+      hits={uiHits}
+      errors={uiErrors}
+      misses={uiMisses}
+      onStart={start}
+      onStop={stop}
+    >
+      <div ref={stageRef} style={gridStyle}>
+        {Array.from({ length: StageDefinition.COLS * StageDefinition.ROWS }, (_, idx) => {
+          const isStim = stimulus && stimulus.idx === idx;
+          const bg = isStim
+            ? stimulus.color === "green"
+              ? palette.green
+              : palette.red
+            : palette.white;
+
+          const border = isStim ? `2px solid ${palette.black}` : "2px solid #ccc";
+
+          return (
+            <ButtonCell
+              key={idx}
+              id={`cell-${idx}`}
+              disabled={!running}
+              onClick={(ev) => onCellClick(idx, ev)}
+              bg={bg}
+              border={border}
+            />
+          );
+        })}
+      </div>
+    </GameSurface4K>
+  );
+}
