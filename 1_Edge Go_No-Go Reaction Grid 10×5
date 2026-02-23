@@ -31,7 +31,7 @@ export default function ColorReactionEdgesGame({
       TOTAL_STIMULI: 50,
       MAX_ACTIVE: 1,
 
-      BUTTON_SIZE_PX: 167,
+      BUTTON_SIZE_PX: 120,
       MIN_DISPLAY_MS: 500,
       MAX_DISPLAY_MS: 1500,
       JITTER_MS_MIN: 30,
